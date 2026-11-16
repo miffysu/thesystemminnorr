@@ -1,0 +1,1437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>THE SYSTEM MIRROR // TOUCHLESS KIOSK</title>
+<style>
+/* ================= 1. DESIGN TOKENS ================= */
+:root{
+  --bg:#060709;
+  --panel:rgba(10,12,16,.48);
+  --border:rgba(255,255,255,.18);
+  --border-bright:rgba(255,255,255,.32);
+  --text:#f0f2f5;
+  --text-dim:#a3adbd;
+  --accent:#ff2222;
+  --accent-glow:rgba(255,34,34,.35);
+  --cyan:#00f0ff;
+  --ease:cubic-bezier(.19,1,.22,1);
+  --mono:'JetBrains Mono','SF Mono','Fira Code',ui-monospace,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;user-select:none}
+html,body{width:100%;height:100%;height:100dvh;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--sans)}
+body{display:flex;flex-direction:column;position:relative;touch-action:manipulation}
+button{font:inherit;color:inherit;touch-action:manipulation}
+
+/* ================= 2. FULLSCREEN CAMERA & CANVAS ================= */
+#stage-background{
+  position:fixed;
+  inset:0;
+  width:100vw;
+  height:100dvh;
+  z-index:1;
+  background:#020204;
+  overflow:hidden;
+}
+video{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  transform:scaleX(-1);
+  opacity:.92;
+  filter:contrast(1.1) brightness(.85);
+  transition:filter .8s, opacity .8s;
+}
+body.is-verdict video{opacity:.96;filter:contrast(1.15) brightness(.9)}
+#tint{
+  position:absolute;
+  inset:0;
+  z-index:5;
+  opacity:0;
+  transition:opacity .8s;
+  pointer-events:none;
+}
+body.is-verdict #tint{opacity:.55}
+canvas{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  pointer-events:none;
+  z-index:10;
+}
+.scanlines{
+  position:absolute;
+  inset:0;
+  z-index:12;
+  pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px),
+    radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.68));
+  opacity:.65;
+}
+.hud-frame{
+  position:absolute;
+  inset:16px;
+  border:1px dashed rgba(255,255,255,.12);
+  pointer-events:none;
+  z-index:15;
+}
+.hud-frame::before,.hud-frame::after{
+  content:'';
+  position:absolute;
+  width:12px;
+  height:12px;
+  border:solid var(--cyan);
+}
+.hud-frame::before{top:-1px;left:-1px;border-width:2px 0 0 2px}
+.hud-frame::after{bottom:-1px;right:-1px;border-width:0 2px 2px 0}
+
+/* ================= 3. TOP HEADER ================= */
+header{
+  position:relative;
+  z-index:50;
+  height:52px;
+  padding:0 24px;
+  border-bottom:1px solid rgba(255,255,255,.1);
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  background:rgba(6,7,9,.45);
+  backdrop-filter:blur(8px);
+  flex-shrink:0;
+}
+.brand{display:flex;align-items:center;gap:10px}
+.status-dot{
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  background:var(--accent);
+  box-shadow:0 0 10px var(--accent);
+  animation:pulse 2s infinite ease-in-out;
+}
+@keyframes pulse{0%,100%{opacity:.4;transform:scale(.9)}50%{opacity:1;transform:scale(1.15)}}
+.title-group h1{font:800 13px var(--mono);letter-spacing:.16em;text-transform:uppercase}
+.title-group p{font:9.5px var(--mono);color:var(--text-dim)}
+.meta-tags{display:flex;align-items:center;gap:14px;font:10.5px var(--mono);color:var(--text-dim)}.meta-tags b{color:var(--cyan)}
+
+#btn-kiosk-arm{
+  padding:6px 12px;
+  font:700 10px var(--mono);
+  background:rgba(255,34,34,.25);
+  border:1px solid var(--accent);
+  color:#fff;
+  border-radius:3px;
+  cursor:pointer;
+  transition:all .2s;
+}
+#btn-kiosk-arm.armed{
+  background:rgba(0,240,255,.15);
+  border-color:var(--cyan);
+  color:var(--cyan);
+}
+
+/* ================= 4. MAIN INTERACTION CONTAINER ================= */
+main{
+  flex:1;
+  position:relative;
+  z-index:30;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  align-items:center;
+  padding:24px 20px 32px;
+}
+
+/* 4A. SCREEN 0: GESTURE-ENABLED LANDING */
+#landing-screen{
+  width:100%;
+  height:100%;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  align-items:center;
+  text-align:center;
+  transition:opacity .4s var(--ease), transform .4s var(--ease);
+}
+#landing-screen.hidden{opacity:0;transform:scale(.97);pointer-events:none;display:none}
+
+.hero-header{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:6px;
+  margin-top:4px;
+}
+.hero-tag{font:700 10px var(--mono);letter-spacing:.22em;color:var(--cyan);text-transform:uppercase}
+.hero-title{
+  font:900 clamp(28px, 4.5vw, 48px) var(--mono);
+  letter-spacing:.08em;
+  color:#fff;
+  line-height:1;
+  text-transform:uppercase;
+  text-shadow:0 4px 24px rgba(0,0,0,.85);
+}
+
+.mirror-dialogue-box{
+  width:100%;
+  max-width:540px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:14px;
+  background:var(--panel);
+  border:1px solid var(--border);
+  padding:20px 24px;
+  border-radius:6px;
+  backdrop-filter:blur(8px);
+  box-shadow:0 15px 40px rgba(0,0,0,.45);
+  transition:border-color .3s, box-shadow .3s;
+}
+.mirror-dialogue-box.locked{
+  border-color:var(--accent);
+  box-shadow:0 15px 40px rgba(0,0,0,.55), 0 0 25px var(--accent-glow);
+}
+.dialogue-speaker{
+  font:700 10px var(--mono);
+  letter-spacing:.18em;
+  color:var(--cyan);
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.locked .dialogue-speaker{color:var(--accent)}
+.dialogue-speaker::before{
+  content:'';
+  width:6px;height:6px;border-radius:50%;
+  background:currentColor;
+  animation:pulse 1s infinite;
+}
+.dialogue-text-en{
+  font-size:14.5px;
+  font-weight:600;
+  color:#fff;
+  line-height:1.45;
+  min-height:42px;
+  text-shadow:0 2px 8px rgba(0,0,0,.8);
+}
+
+/* 首頁手勢啟動進度按鈕 */
+.btn-start{
+  position:relative;
+  overflow:hidden;
+  width:100%;
+  max-width:360px;
+  min-height:52px;
+  padding:12px 24px;
+  font:800 12px var(--mono);
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  border-radius:4px;
+  cursor:pointer;
+  background:rgba(255,34,34,.85);
+  color:#fff;
+  border:1px solid var(--accent);
+  box-shadow:0 6px 20px rgba(255,34,34,.45);
+  transition:transform .15s var(--ease);
+}
+.btn-start:active{transform:scale(0.96)}
+#start-hold-fill{
+  position:absolute;
+  inset:0;
+  width:0%;
+  background:rgba(0, 240, 255, 0.45);
+  pointer-events:none;
+  transition:width 0.05s linear;
+}
+.btn-start span{position:relative;z-index:2}
+
+/* 4B. SCREEN 1: SIDE-BY-SIDE GESTURE QUESTION PANEL */
+#question-panel{
+  width:100%;
+  max-width:780px;
+  margin-top:auto;
+  margin-bottom:8px;
+  transition:opacity .4s,transform .4s;
+  display:none;
+}
+#question-panel.active{display:block}
+#question-panel.gone{opacity:0;transform:translateY(12px);pointer-events:none}
+
+.panel-card{
+  background:var(--panel);
+  border:1px solid var(--border);
+  border-radius:6px;
+  padding:18px 22px;
+  box-shadow:0 20px 50px rgba(0,0,0,.55);
+  backdrop-filter:blur(8px);
+  transition:border-color .3s,box-shadow .3s;
+}
+.panel-card.over{border-color:var(--accent);box-shadow:0 20px 50px rgba(0,0,0,.55),0 0 25px var(--accent-glow)}
+.q-meta{display:flex;justify-content:space-between;font:10.5px var(--mono);color:var(--text-dim);margin-bottom:8px}
+.q-step{color:var(--cyan);font-weight:700}
+.timer-bar-wrap{height:4px;background:rgba(255,255,255,.15);border-radius:2px;overflow:hidden;margin-bottom:4px}
+#timer-bar{height:100%;width:100%;background:var(--cyan);transform-origin:left;transition:background-color .3s}
+#timer-bar.overtime{background:var(--accent);box-shadow:0 0 8px var(--accent)}
+.timer-text{display:flex;justify-content:space-between;font:9.5px var(--mono);color:var(--text-dim);margin-bottom:12px}
+.over #timer-countdown{color:var(--accent)}
+
+.q-card{
+  background:rgba(0,0,0,.32);
+  border:1px solid rgba(255,255,255,.12);
+  padding:12px 16px;
+  border-radius:4px;
+  margin-bottom:14px;
+  text-align:center;
+}
+.q-prompt-en{font-size:15px;font-weight:700;color:#fff;line-height:1.4;text-shadow:0 1px 6px rgba(0,0,0,.85)}
+
+/* 左右並排手勢選擇卡片 */
+.options-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px;
+}
+.btn-opt{
+  position:relative;
+  overflow:hidden;
+  min-height:84px;
+  background:rgba(255,255,255,.07);
+  border:1.5px solid var(--border);
+  border-radius:5px;
+  padding:14px 16px;
+  cursor:pointer;
+  text-align:left;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  gap:8px;
+  transition:transform .15s var(--ease), background-color .2s, border-color .2s, box-shadow .2s;
+}
+.btn-opt:hover{
+  background:rgba(255,255,255,.14);
+  border-color:var(--cyan);
+}
+.btn-opt.gesture-active{
+  border-color:var(--cyan);
+  background:rgba(0,240,255,.14);
+  box-shadow:0 0 22px rgba(0,240,255,.35);
+  transform:scale(1.02);
+}
+.gesture-cue{
+  font:700 9.5px var(--mono);
+  letter-spacing:.1em;
+  color:var(--cyan);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+}
+.btn-opt[data-i="1"] .gesture-cue{
+  justify-content:flex-end;
+  gap:8px;
+}
+.btn-opt-en{font-size:13.5px;font-weight:600;color:#fff;line-height:1.35;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+
+/* 手勢停留讀條 (Dwell Progress Bar) */
+.dwell-bar{
+  position:absolute;
+  bottom:0;
+  left:0;
+  height:4px;
+  width:0%;
+  background:var(--cyan);
+  box-shadow:0 0 10px var(--cyan);
+  transition:width 0.05s linear;
+}
+
+/* ================= 5. BOTTOM DUAL-CORNER HUD ================= */
+#verdict-bar{
+  position:fixed;
+  bottom:42px;
+  left:20px;
+  right:20px;
+  z-index:50;
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  pointer-events:none;
+  opacity:0;
+  visibility:hidden;
+  transition:all .6s var(--ease);
+}
+#verdict-bar.show{opacity:1;visibility:visible}
+.v-meta-group{
+  pointer-events:auto;
+  max-width:400px;
+  background:rgba(10,12,16,.65);
+  border:1px solid var(--border);
+  border-left:3px solid var(--accent);
+  padding:14px 16px;
+  border-radius:4px;
+  backdrop-filter:blur(10px);
+  box-shadow:0 12px 30px rgba(0,0,0,.6);
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.v-title-tag{font:800 15px var(--mono);color:#fff;letter-spacing:.04em}
+.v-desc-tag{font-size:11px;color:var(--text-dim);line-height:1.4}
+.v-keywords-tag{font:9.5px var(--mono);color:var(--cyan)}
+.v-actions{
+  pointer-events:auto;
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  justify-content:flex-end;
+  background:rgba(10,12,16,.65);
+  border:1px solid var(--border);
+  padding:10px 12px;
+  border-radius:4px;
+  backdrop-filter:blur(10px);
+}
+[hidden]{display:none!important}
+#btn-cam{
+  position:fixed;
+  z-index:60;
+  top:68px;
+  right:20px;
+  padding:10px 16px;
+  font:700 10.5px var(--mono);
+  background:var(--accent);
+  color:#fff;
+  border:none;
+  border-radius:4px;
+  box-shadow:0 4px 15px rgba(255,34,34,.7);
+  cursor:pointer;
+}
+.btn-action.rec-on{background:var(--accent);border-color:var(--accent);animation:pulse 1.2s infinite}
+.btn-action{
+  min-height:40px;
+  padding:9px 14px;
+  font:700 10.5px var(--mono);
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  border-radius:3px;
+  cursor:pointer;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,.08);
+  white-space:nowrap;
+  transition:transform .15s, background-color .2s;
+}
+.btn-action:active{transform:scale(0.95)}
+.btn-action.primary{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 4px 12px rgba(255,34,34,.4)}
+
+/* ================= 6. THERMAL TICKET ================= */
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.85);backdrop-filter:blur(8px);z-index:2000;display:none;align-items:flex-start;justify-content:center;padding:20px;overflow:auto;-webkit-overflow-scrolling:touch}
+.modal-backdrop.on{display:flex}
+.receipt-paper{
+  margin:auto;
+  flex-shrink:0;
+  background:#f4f3ef;
+  color:#1a1a1a;
+  width:345px;
+  padding:22px 20px;
+  font:10.5px/1.45 var(--mono);
+  box-shadow:0 25px 60px rgba(0,0,0,.9);
+  border-top:4px dashed #888;
+  border-bottom:4px dashed #888;
+}
+.receipt-center{text-align:center}
+.receipt-divider{border-top:1px dashed #777;margin:10px 0}
+.receipt-top-grid{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-top:4px}
+.receipt-meta-col{flex:1;display:flex;flex-direction:column;gap:5px}
+.receipt-meta-item{display:flex;flex-direction:column}
+.receipt-meta-item span{font-size:8.5px;color:#666}
+.receipt-meta-item b{font-size:10.5px;color:#111}
+.receipt-mugshot-box{width:88px;height:106px;border:1.5px solid #222;background:#111;padding:2px;flex-shrink:0;display:flex;flex-direction:column}
+#rec-mugshot{width:100%;height:86px;object-fit:cover;filter:grayscale(1) contrast(1.45);display:block}
+.mugshot-caption{font-size:7px;text-align:center;background:#1a1a1a;color:#f4f3ef;padding:2px 0;letter-spacing:.06em}
+.receipt-row{display:flex;justify-content:space-between;gap:8px;margin-bottom:4px}
+.receipt-stamp{border:2px solid #b00;color:#b00;padding:6px;text-align:center;font-weight:800;font-size:12px;letter-spacing:.1em;margin-top:12px;transform:rotate(-2deg)}
+.receipt-actions{margin-top:16px;display:flex;gap:8px}
+.receipt-btn{flex:1;min-height:40px;padding:8px;border:1px solid #333;background:#fff;color:#000;font:700 10px var(--mono);cursor:pointer;text-transform:uppercase}
+
+@media print{body>*:not(#ticket-modal){display:none!important}#ticket-modal{position:static;display:block!important;background:#fff;padding:0}
+ .receipt-actions{display:none}.receipt-paper{box-shadow:none;margin:0 auto}}
+
+@media (max-width:720px){
+  header{padding:10px 16px}
+  .meta-tags span{display:none}
+  .options-grid{grid-template-columns:1fr;gap:10px}
+  .btn-opt{min-height:64px}
+  #verdict-bar{flex-direction:column;gap:10px;align-items:stretch;bottom:38px;left:14px;right:14px}
+  .v-meta-group{max-width:100%}
+  .v-actions{justify-content:stretch}
+  .btn-action{flex:1;text-align:center}
+}
+</style>
+</head>
+<body>
+
+<!-- 1. FULLSCREEN AMBIENT CAMERA & OVERLAY CANVAS -->
+<div id="stage-background">
+  <video id="webcam" autoplay playsinline muted></video>
+  <div id="tint"></div>
+  <canvas id="overlay-canvas"></canvas>
+  <div class="scanlines"></div>
+  <div class="hud-frame"></div>
+</div>
+
+<!-- 2. TOP HEADER -->
+<header>
+  <div class="brand">
+    <div class="status-dot"></div>
+    <div class="title-group">
+      <h1>THE SYSTEM MIRROR</h1>
+      <p>TOUCHLESS GESTURE & BIOMETRIC INTERFACE // DES 760A</p>
+    </div>
+  </div>
+  <div class="meta-tags">
+    <button id="btn-kiosk-arm">🔇 TAP TO ARM AUDIO</button>
+    <span>SENSORS: <b id="lm-stat">INIT</b></span>
+    <span>LATENCY: <b id="meta-latency">+0.0s</b></span>
+  </div>
+</header>
+
+<button id="btn-cam" hidden>ENABLE CAMERA</button>
+
+<!-- 3. INTERACTION CONTAINER -->
+<main>
+  <!-- SCREEN 0: GESTURE-ENABLED LANDING -->
+  <div id="landing-screen">
+    <div class="hero-header">
+      <div class="hero-tag">[ TOUCHLESS BIOMETRIC PROTOCOL ]</div>
+      <div class="hero-title">THE SYSTEM MIRROR</div>
+    </div>
+
+    <div class="mirror-dialogue-box" id="dialogue-box">
+      <div class="dialogue-speaker" id="mirror-status">SCANNING PERIMETER…</div>
+      <div class="dialogue-text-en" id="dialogue-en">
+        "Raise your hand to the camera or tap below to begin your evaluation."
+      </div>
+      <button class="btn-start" id="btn-start">
+        <div id="start-hold-fill"></div>
+        <span id="start-btn-label">✋ RAISE HAND (1.5s) OR TAP TO BEGIN</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- SCREEN 1: SIDE-BY-SIDE GESTURE QUESTION PANEL -->
+  <div id="question-panel">
+    <div class="panel-card" id="q-card">
+      <div class="q-meta">
+        <span class="q-step" id="q-counter">STEP 01 / 05</span>
+        <span id="gesture-hint-status">RAISE LEFT OR RIGHT HAND TO CHOOSE</span>
+      </div>
+      <div class="timer-bar-wrap"><div id="timer-bar"></div></div>
+      <div class="timer-text">
+        <span>WINDOW: 10.0s</span>
+        <span id="timer-countdown">10.0s</span>
+      </div>
+      <div class="q-card">
+        <div class="q-prompt-en" id="q-en"></div>
+      </div>
+      <div class="options-grid">
+        <button class="btn-opt" id="opt-card-0" data-i="0">
+          <div class="gesture-cue"><span>✋ RAISE LEFT HAND</span><span>[1]</span></div>
+          <div class="btn-opt-en" id="opt-a-en"></div>
+          <div class="dwell-bar" id="dwell-0"></div>
+        </button>
+        <button class="btn-opt" id="opt-card-1" data-i="1">
+          <div class="gesture-cue"><span>[2]</span><span>RAISE RIGHT HAND ✋</span></div>
+          <div class="btn-opt-en" id="opt-b-en"></div>
+          <div class="dwell-bar" id="dwell-1"></div>
+        </button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- 4. BOTTOM DUAL-CORNER HUD -->
+<div id="verdict-bar">
+  <div class="v-meta-group">
+    <div class="v-title-tag" id="bar-title"></div>
+    <div class="v-keywords-tag" id="bar-keywords"></div>
+    <div class="v-desc-tag" id="bar-desc"></div>
+  </div>
+  <div class="v-actions">
+    <button class="btn-action primary" id="btn-ticket">PRINT TICKET</button>
+    <button class="btn-action" id="btn-rec">● REC</button>
+    <button class="btn-action" id="btn-shot">PNG</button>
+    <button class="btn-action" id="btn-reset">RESET</button>
+  </div>
+</div>
+
+<!-- 5. THERMAL TICKET MODAL -->
+<div class="modal-backdrop" id="ticket-modal">
+  <div class="receipt-paper">
+    <div class="receipt-center">
+      <div style="font-size:12px;font-weight:800;letter-spacing:.1em">BUREAU OF ALGORITHMIC ROLES</div>
+      <div style="font-size:8.5px;color:#555">DEPARTMENT OF BIOMETRIC CLASSIFICATION</div>
+      <div class="receipt-divider"></div>
+      <div style="font-size:9.5px;font-weight:700">FACIAL IDENTITY DISPOSITION</div>
+    </div>
+    <div class="receipt-divider"></div>
+
+    <div class="receipt-top-grid">
+      <div class="receipt-meta-col">
+        <div class="receipt-meta-item">
+          <span>SUBJECT ID:</span>
+          <b id="rec-id"></b>
+        </div>
+        <div class="receipt-meta-item">
+          <span>TIMESTAMP:</span>
+          <b id="rec-time"></b>
+        </div>
+        <div class="receipt-meta-item">
+          <span>LATENCY PENALTY:</span>
+          <b id="rec-latency"></b>
+        </div>
+      </div>
+      <div class="receipt-mugshot-box">
+        <img id="rec-mugshot" alt="Subject Biometric Capture" />
+        <div class="mugshot-caption">BIOMETRIC_CAPTURE</div>
+      </div>
+    </div>
+
+    <div class="receipt-divider"></div><div id="rec-log"></div><div class="receipt-divider"></div>
+    <div class="receipt-row"><span>MAPPED ROLE:</span><b id="rec-title"></b></div>
+    <div class="receipt-row"><span>THREAT LEVEL:</span><b id="rec-lvl"></b></div>
+    <div class="receipt-row"><span>SEMIOTIC AXIS:</span><span id="rec-axis"></span></div>
+    <div class="receipt-row"><span>VISUAL SYNTAX:</span><span id="rec-syntax"></span></div>
+    <div class="receipt-divider"></div>
+    <div style="font-size:9px;color:#333" id="rec-desc"></div>
+    <div class="receipt-stamp" id="rec-stamp"></div>
+    <div class="receipt-actions">
+      <button class="receipt-btn" id="btn-print">PRINT / PDF</button>
+      <button class="receipt-btn" id="btn-close">CLOSE</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+const LIMIT = 10;
+const QUESTIONS_PER_SESSION = 5;
+
+const LURE_PROMPTS = [
+  {
+    en: '"Hey. Yes, you standing there. Raise your hand to the mirror—no need to touch the glass."',
+    voice: "Hey. Yes, you standing there. Raise your hand to the mirror. No need to touch the glass."
+  },
+  {
+    en: '"Subject detected. Hold up one hand for 1.5 seconds to begin your biometric classification."',
+    voice: "Subject detected. Hold up one hand for 1.5 seconds to begin your biometric classification."
+  },
+  {
+    en: '"I see your face. Raise your hand in front of the lens so we can begin."',
+    voice: "I see your face. Raise your hand in front of the lens so we can begin."
+  }
+];
+
+const QUESTION_BANK = [
+ {en:"A street surveillance camera turns directly toward you:",opts:[{en:"Look down and walk away",conformist:2,anonymous:3},{en:"Stare straight into the lens",dissenter:3,observer:2}]},
+ {en:"You see a controversial, unverified leak online:",opts:[{en:"Repost it and join the debate",dissenter:3,observer:1},{en:"Save it silently, post nothing",observer:3,anonymous:2}]},
+ {en:"When setting up a new social media profile:",opts:[{en:"Real name and clear photo",conformist:4,observer:1},{en:"Fake name and random avatar",anonymous:4,dissenter:2}]},
+ {en:"You find a loophole in the platform rules:",opts:[{en:"Follow the rules anyway",conformist:3,observer:2},{en:"Use it to beat the system",dissenter:4,anonymous:2}]},
+ {en:"An app requests 'Always Allow' background location tracking:",opts:[{en:"Accept for full app convenience",conformist:4,observer:1},{en:"Deny and spoof GPS coordinates",anonymous:4,dissenter:2}]},
+ {en:"At an airport gate offering facial-recognition boarding:",opts:[{en:"Step up to the scanner to board faster",conformist:4,observer:1},{en:"Opt out and request manual ID check",anonymous:3,dissenter:2}]},
+ {en:"A heated political argument erupts in your group chat:",opts:[{en:"Read every message silently without typing",observer:4,anonymous:2},{en:"Jump in and challenge the majority view",dissenter:4,observer:1}]},
+ {en:"Your phone suggests an AI-generated polite reply:",opts:[{en:"Tap the suggested reply to save time",conformist:3,observer:2},{en:"Ignore it and write something unexpected",dissenter:3,anonymous:1}]},
+ {en:"You realize your feed algorithm is feeding you outrage:",opts:[{en:"Observe the pattern quietly and take notes",observer:4,anonymous:1},{en:"Click random topics to confuse the profile",dissenter:3,anonymous:3}]},
+ {en:"A smart speaker lights up when nobody said its wake word:",opts:[{en:"Ignore it—I have nothing to hide",conformist:3,observer:1},{en:"Unplug the power cable immediately",anonymous:4,dissenter:2}]},
+ {en:"A website asks you to accept 400 tracking cookies:",opts:[{en:"Click 'Accept All' to read the article fast",conformist:4,observer:1},{en:"Open a private window and block trackers",anonymous:4,observer:2}]},
+ {en:"You witness a minor glitch in a public transit card reader:",opts:[{en:"Report the malfunction to station staff",conformist:4,observer:1},{en:"Keep quiet and watch how others react",observer:3,dissenter:2}]},
+ {en:"A friend asks to tag your face in a public party photo:",opts:[{en:"Approve the tag on my public profile",conformist:3,observer:1},{en:"Ask them to blur my face or remove the tag",anonymous:4,observer:1}]},
+ {en:"Your employer installs productivity-monitoring software:",opts:[{en:"Keep my workflow steady and transparent",conformist:4,observer:1},{en:"Run a script to simulate mouse movement",dissenter:4,anonymous:2}]},
+ {en:"An automated system wrongly flags your post as spam:",opts:[{en:"Delete the post and rephrase it safely",conformist:3,observer:1},{en:"Repost it using coded symbols to bypass filters",dissenter:4,anonymous:2}]},
+ {en:"You receive a push notification asking you to rate a delivery:",opts:[{en:"Give 5 stars immediately as expected",conformist:4,observer:0},{en:"Swipe it away without feeding the metric",observer:3,anonymous:2}]},
+ {en:"Walking past a store window with an interactive mirror display:",opts:[{en:"Stop and watch how the camera tracks me",observer:4,dissenter:1},{en:"Pull my collar up and step out of frame",anonymous:4,conformist:1}]},
+ {en:"A new terms-of-service update spans 45 pages:",opts:[{en:"Scroll to the bottom and tap 'I Agree'",conformist:4,observer:1},{en:"Search the text for data-selling clauses",observer:4,dissenter:1}]},
+ {en:"You find an unlocked phone left on a café table:",opts:[{en:"Hand it straight to the barista",conformist:4,observer:1},{en:"Wait nearby to observe who comes back for it",observer:4,anonymous:1}]},
+ {en:"Your digital trust score drops without explanation:",opts:[{en:"Modify my online habits to raise the score",conformist:4,observer:1},{en:"Reject the score and abandon the platform",dissenter:3,anonymous:3}]}
+];
+
+const ROLES = {
+ conformist:{title:"THE CONFORMIST", axis:"Conformity / Social Norms", keywords:"Symmetry · Regularity · Closure", base:2, col:"#37e6a0", stamp:"COMPLIANT // PASS", stampCol:"#080",
+  desc:"Strict alignment with societal norms. Facial identity mapped to balanced vermilion geometries—orderly, predictable, and compliant.",
+  filter:"saturate(1.1) contrast(1.05)", tint:"rgba(255,170,90,.12)", blend:"soft-light", imgSrc:"mask-conformist.png",
+  voiceVerdict:"Classification complete. You are The Conformist. Predictable, obedient, and fully aligned with the system."},
+ observer:{title:"THE OBSERVER", axis:"Surveillance / Telemetry", keywords:"Repetition · Grid · Masking", base:5, col:"#8fb8ff", stamp:"WATCHLIST // MONITOR", stampCol:"#c80",
+  desc:"Neither resisting nor obeying. An aloof watcher lurking behind digital telemetry grids, scanning without leaving footprints.",
+  filter:"grayscale(.6) contrast(1.2)", tint:"rgba(70,120,255,.25)", blend:"multiply", imgSrc:"mask-observer.png",
+  voiceVerdict:"Classification complete. You are The Observer. Watching from the shadows, leaving no trace."},
+ dissenter:{title:"THE DISSENTER", axis:"Resistance / Anti-Power", keywords:"Asymmetry · Rupture · Contrast", base:8, col:"#ff4f5e", stamp:"HOSTILE // DISSENT", stampCol:"#b00",
+  desc:"Direct friction against authorized protocols. Slashed by violent red-black strokes, breaking algorithmic symmetry.",
+  filter:"contrast(1.25) saturate(1.4)", tint:"rgba(255,0,60,.15)", blend:"color-dodge", imgSrc:"mask-dissenter.png",
+  voiceVerdict:"Alert. Hostile anomaly detected. You are The Dissenter. Your defiance is now permanently inscribed."},
+ anonymous:{title:"THE ANONYMOUS", axis:"Anonymity / Erasure", keywords:"Blur · Erasure · Blank", base:9, col:"#ffffff", stamp:"ANONYMOUS // UNRESOLVED", stampCol:"#444",
+  desc:"Refusal of biometric extraction. Half the face dissolves into stochastic noise—erasing the human anchor.",
+  filter:"grayscale(.75) contrast(1.3)", tint:"rgba(255,255,255,.15)", blend:"screen", imgSrc:"mask-anonymous.png",
+  voiceVerdict:"Identity unresolved. You are The Anonymous. Erased from biometric recognition."}
+};
+
+const MASK_TEXTURES = {};
+for (const key in ROLES) {
+  const img = new Image();
+  img.src = ROLES[key].imgSrc;
+  MASK_TEXTURES[key] = img;
+}
+
+/* ================= 2. AUDIO ENGINE ================= */
+let audioCtx = null, bgmStarted = false, mechOsc = null, mechGain = null;
+
+function startSuspenseBGM() {
+  if (bgmStarted) return;
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    audioCtx = new AudioContext();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    const osc1 = audioCtx.createOscillator(), osc2 = audioCtx.createOscillator();
+    const lfo = audioCtx.createOscillator(), lfoGain = audioCtx.createGain();
+    const masterGain = audioCtx.createGain(), filter = audioCtx.createBiquadFilter();
+
+    osc1.type = 'sawtooth'; osc1.frequency.setValueAtTime(65.41, audioCtx.currentTime);
+    osc2.type = 'triangle'; osc2.frequency.setValueAtTime(69.30, audioCtx.currentTime);
+    filter.type = 'lowpass'; filter.frequency.setValueAtTime(220, audioCtx.currentTime);
+
+    lfo.type = 'sine'; lfo.frequency.setValueAtTime(0.22, audioCtx.currentTime);
+    lfoGain.gain.setValueAtTime(80, audioCtx.currentTime);
+    lfo.connect(lfoGain); lfoGain.connect(filter.frequency);
+
+    masterGain.gain.setValueAtTime(0.14, audioCtx.currentTime);
+    osc1.connect(filter); osc2.connect(filter); filter.connect(masterGain); masterGain.connect(audioCtx.destination);
+    osc1.start(); osc2.start(); lfo.start();
+
+    mechOsc = audioCtx.createOscillator();
+    const mechFilter = audioCtx.createBiquadFilter();
+    mechGain = audioCtx.createGain();
+    mechOsc.type = 'sawtooth'; mechOsc.frequency.setValueAtTime(82.41, audioCtx.currentTime);
+    mechFilter.type = 'bandpass'; mechFilter.frequency.setValueAtTime(360, audioCtx.currentTime); mechFilter.Q.setValueAtTime(2.5, audioCtx.currentTime);
+    mechGain.gain.setValueAtTime(0.0, audioCtx.currentTime);
+    mechOsc.connect(mechFilter); mechFilter.connect(mechGain); mechGain.connect(audioCtx.destination);
+    mechOsc.start();
+
+    setInterval(() => {
+      if (!audioCtx || audioCtx.state !== 'running') return;
+      const pingOsc = audioCtx.createOscillator(), pingGain = audioCtx.createGain();
+      pingOsc.type = 'sine'; pingOsc.frequency.setValueAtTime(980, audioCtx.currentTime);
+      pingOsc.frequency.exponentialRampToValueAtTime(490, audioCtx.currentTime + 0.55);
+      pingGain.gain.setValueAtTime(0.045, audioCtx.currentTime);
+      pingGain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.75);
+      pingOsc.connect(pingGain); pingGain.connect(audioCtx.destination);
+      pingOsc.start(); pingOsc.stop(audioCtx.currentTime + 0.8);
+    }, 5500);
+    bgmStarted = true;
+  } catch (e) {}
+}
+
+function playConfirmBeep() {
+  if (!audioCtx || audioCtx.state !== 'running') return;
+  const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(660, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(1120, audioCtx.currentTime + 0.14);
+  gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.18);
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+}
+
+function speakMirror(text, onEndCallback){
+  if(!('speechSynthesis' in window)){ if(onEndCallback) onEndCallback(); return; }
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.lang = 'en-US'; utter.pitch = 0.85; utter.rate = 0.94;
+  const voices = window.speechSynthesis.getVoices();
+  const preferredVoice = voices.find(v => v.name.includes('Google UK English Female') || v.name.includes('Daniel') || v.name.includes('Samantha') || v.name.includes('Google US English'));
+  if(preferredVoice) utter.voice = preferredVoice;
+
+  utter.onstart = () => {
+    app.isSpeaking = true;
+    $('#mirror-status').textContent = 'SUBJECT LOCKED // TRANSMITTING';
+    $('#dialogue-box').classList.add('locked');
+    if(mechGain && audioCtx) mechGain.gain.setTargetAtTime(0.03, audioCtx.currentTime, 0.05);
+  };
+  utter.onend = () => {
+    app.isSpeaking = false;
+    if(mechGain && audioCtx) mechGain.gain.setTargetAtTime(0.0, audioCtx.currentTime, 0.08);
+    if(onEndCallback) onEndCallback();
+  };
+  utter.onerror = () => {
+    app.isSpeaking = false;
+    if(mechGain && audioCtx) mechGain.gain.setTargetAtTime(0.0, audioCtx.currentTime, 0.08);
+    if(onEndCallback) onEndCallback();
+  };
+  window.speechSynthesis.speak(utter);
+}
+
+/* ================= 3. STATE & TRACKING ================= */
+const app = {
+  state:'landing',
+  sessionQuestions:[],
+  q:0,
+  scores:{conformist:0,dissenter:0,observer:0,anonymous:0},
+  log:[],
+  penalty:0,
+  qStart:0,
+  timer:0,
+  role:null,
+  level:0,
+  camOK:false,
+  audioArmed:false,
+  isSpeaking:false,
+  lastLureTime:0,
+  emptyFrames:0,
+  lureIndex:0,
+  t0:0,
+  frameCount:0,
+  subject:'SBJ-'+Math.random().toString(16).slice(2,8).toUpperCase()
+};
+
+const video=$('#webcam'), cv=$('#overlay-canvas'), ctx=cv.getContext('2d'), stageBg=$('#stage-background');
+let cw=0, ch=0, dpr=1, faceLm=null, handLm=null, LMC=null, lastVT=-1;
+const MASK_ALPHA = 0.58;
+const pad=n=>String(n).padStart(2,'0'), clamp=(v,a,b)=>Math.min(b,Math.max(a,v)), ease=t=>t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2;
+
+const track = {
+  ok: false, seen: false, pts: null,
+  eyeL: [0,0], eyeR: [0,0], mouth: [0,0],
+  top: [0,0], chin: [0,0], cheekL: [0,0], cheekR: [0,0]
+};
+
+// 手勢狀態機
+const gesture = {
+  active: false,
+  palmX: 0,
+  palmY: 0,
+  side: null,      // 0 = 左側 (Option A), 1 = 右側 (Option B)
+  holdStart: 0,
+  progress: 0,
+  cooldownUntil: 0
+};
+
+function lerpPt(curr, target, alpha) {
+  return [curr[0] + (target[0] - curr[0]) * alpha, curr[1] + (target[1] - curr[1]) * alpha];
+}
+
+function pickFiveRandomQuestions() {
+  const copy = [...QUESTION_BANK];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy.slice(0, QUESTIONS_PER_SESSION);
+}
+
+function triggerAutonomousLure(now){
+  if(app.state !== 'landing' || app.isSpeaking) return;
+  if(now - app.lastLureTime < 15000) return;
+  app.lastLureTime = now;
+  const prompt = LURE_PROMPTS[app.lureIndex % LURE_PROMPTS.length];
+  app.lureIndex++;
+  $('#dialogue-en').textContent = prompt.en;
+  $('#dialogue-box').classList.add('locked');
+  $('#mirror-status').textContent = 'SUBJECT DETECTED';
+  speakMirror(prompt.voice);
+}
+
+function unlockAllAudio(){
+  if (!app.audioArmed) {
+    app.audioArmed = true;
+    const btn = $('#btn-kiosk-arm');
+    btn.textContent = '🔊 AUDIO: ARMED';
+    btn.classList.add('armed');
+    startSuspenseBGM();
+    if ('speechSynthesis' in window) window.speechSynthesis.speak(new SpeechSynthesisUtterance(''));
+  } else if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+}
+
+/* ================= 4. FLOW CONTROLLER ================= */
+function startQuiz(){
+  unlockAllAudio();
+  playConfirmBeep();
+  if('speechSynthesis' in window) window.speechSynthesis.cancel();
+  app.isSpeaking = false;
+  if(mechGain && audioCtx) mechGain.gain.setTargetAtTime(0.0, audioCtx.currentTime, 0.05);
+
+  resetGestureUI();
+  gesture.cooldownUntil = performance.now() + 900; // 避免剛舉手啟動瞬間誤選第一題
+  app.sessionQuestions = pickFiveRandomQuestions();
+  app.state = 'quiz';
+  $('#landing-screen').classList.add('hidden');
+  $('#question-panel').classList.add('active');
+  renderQuestion();
+}
+
+function startTimer(){
+  clearInterval(app.timer); app.qStart=performance.now();
+  const bar=$('#timer-bar'), txt=$('#timer-countdown'), card=$('#q-card'); bar.classList.remove('overtime'); card.classList.remove('over');
+  app.timer=setInterval(()=>{
+    const e=(performance.now()-app.qStart)/1000;
+    if(e<=LIMIT){ bar.style.transform=`scaleX(${1-e/LIMIT})`; txt.textContent=(LIMIT-e).toFixed(1)+'s'; }
+    else{ bar.style.transform='scaleX(1)'; bar.classList.add('overtime'); card.classList.add('over');
+      txt.textContent=`+${(e-LIMIT).toFixed(1)}s OVERTIME`; $('#meta-latency').textContent=`+${(app.penalty+e-LIMIT).toFixed(1)}s`; }
+  },50);
+}
+
+function renderQuestion(){
+  const q=app.sessionQuestions[app.q];
+  $('#q-counter').textContent=`STEP ${pad(app.q+1)} / ${pad(QUESTIONS_PER_SESSION)}`;
+  $('#q-en').textContent=q.en;
+  $('#opt-a-en').textContent=q.opts[0].en;
+  $('#opt-b-en').textContent=q.opts[1].en;
+  startTimer();
+}
+
+function answer(i){
+  unlockAllAudio();
+  if(app.state !== 'quiz') return;
+  playConfirmBeep();
+  resetGestureUI();
+  gesture.cooldownUntil = performance.now() + 850; // 換題冷卻期，讓受試者放下手臂
+
+  const e=(performance.now()-app.qStart)/1000, over=Math.max(0,e-LIMIT), o=app.sessionQuestions[app.q].opts[i];
+  app.penalty+=over; app.log.push({q:app.q+1, t:e, over, pick:i?'B':'A'});
+  for(const k in o) if(k in app.scores) app.scores[k]+=o[k];
+  $('#meta-latency').textContent=`+${app.penalty.toFixed(1)}s`;
+  if(++app.q < QUESTIONS_PER_SESSION) renderQuestion(); else verdict();
+}
+
+/* ================= 5. VERDICT STATE ================= */
+function verdict(){
+  clearInterval(app.timer); app.state = 'verdict';
+  document.body.classList.add('is-verdict');
+  if(app.penalty>5){ app.scores.observer+=2; app.scores.anonymous+=2; }
+  const id=Object.keys(app.scores).reduce((a,b)=>app.scores[b]>app.scores[a]?b:a);
+  app.role=ROLES[id]; app.role.id=id;
+  app.level=clamp(app.role.base+(app.penalty>5?1:0)+(app.penalty>12?1:0),1,10);
+  
+  video.style.filter=app.role.filter; const t=$('#tint'); t.style.background=app.role.tint; t.style.mixBlendMode=app.role.blend;
+
+  $('#question-panel').classList.add('gone');
+  $('#bar-title').textContent=`${app.role.title} // LVL ${pad(app.level)}`;
+  $('#bar-keywords').textContent=`${app.role.axis} [${app.role.keywords}]`;
+  $('#bar-desc').textContent=app.role.desc;
+  
+  app.t0=performance.now();
+  setTimeout(() => speakMirror(app.role.voiceVerdict), 900);
+  setTimeout(() => $('#verdict-bar').classList.add('show'), 1400);
+}
+
+/* ================= 6. CAMERA & SELF-HOSTED MEDIAPIPE MODELS ================= */
+async function initCamera(){
+  const btn=$('#btn-cam');
+  btn.hidden=true;
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ app.camOK=false; btn.hidden=false; return; }
+  try{
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1920},height:{ideal:1080},facingMode:'user'},audio:false}); }
+    catch(e) { stream = await navigator.mediaDevices.getUserMedia({video:true, audio:false}); }
+    video.srcObject = stream;
+    video.play().then(() => { app.camOK = true; btn.hidden = true; loadModels(); }).catch(() => { app.camOK = false; btn.hidden = false; });
+  }catch(e){ app.camOK=false; btn.hidden=false; }
+}
+
+async function loadModels(){
+  const el=$('#lm-stat'); el.textContent='LOADING_AI…';
+  try{
+    // 優先載入本地自託管的 ./mediapipe/，若不存在則退回 CDN
+    let visionMod, fs;
+    try {
+      visionMod = await import('./mediapipe/vision_bundle.mjs');
+      fs = await visionMod.FilesetResolver.forVisionTasks('./mediapipe/wasm');
+    } catch {
+      const B='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+      visionMod = await import(B+'/vision_bundle.mjs');
+      fs = await visionMod.FilesetResolver.forVisionTasks(B+'/wasm');
+    }
+
+    const { FaceLandmarker: F, HandLandmarker: H } = visionMod;
+    const faceModelPath = './mediapipe/face_landmarker.task';
+    const handModelPath = './mediapipe/hand_landmarker.task';
+
+    try {
+      faceLm = await F.createFromOptions(fs, { baseOptions:{modelAssetPath:faceModelPath, delegate:'GPU'}, runningMode:'VIDEO', numFaces:1 });
+    } catch {
+      faceLm = await F.createFromOptions(fs, { baseOptions:{modelAssetPath:faceModelPath, delegate:'CPU'}, runningMode:'VIDEO', numFaces:1 });
+    }
+
+    try {
+      handLm = await H.createFromOptions(fs, { baseOptions:{modelAssetPath:handModelPath, delegate:'GPU'}, runningMode:'VIDEO', numHands:1 });
+    } catch {
+      try {
+        handLm = await H.createFromOptions(fs, { baseOptions:{modelAssetPath:handModelPath, delegate:'CPU'}, runningMode:'VIDEO', numHands:1 });
+      } catch { handLm = null; }
+    }
+
+    LMC={tess:F.FACE_LANDMARKS_TESSELATION, cont:[F.FACE_LANDMARKS_FACE_OVAL,F.FACE_LANDMARKS_LEFT_EYE,F.FACE_LANDMARKS_RIGHT_EYE,F.FACE_LANDMARKS_LEFT_EYEBROW,F.FACE_LANDMARKS_RIGHT_EYEBROW,F.FACE_LANDMARKS_LIPS]};
+    el.textContent = handLm ? 'FACE+HAND_ACTIVE' : 'FACE_ACTIVE';
+  }catch(e){
+    faceLm=null; handLm=null;
+    el.textContent='TOUCH_ONLY';
+  }
+}
+
+function cover(){ const vw=video.videoWidth||640,vh=video.videoHeight||480,s=Math.max(cw/vw,ch/vh); return {vw,vh,s,ox:(cw-vw*s)/2,oy:(ch-vh*s)/2}; }
+
+/* 偶數幀偵測人臉 */
+function detectFace(now){
+  if(!faceLm||!app.camOK||video.readyState<2||!video.videoWidth) return;
+  let r; try{ r=faceLm.detectForVideo(video,now); }catch{ return; }
+  const L=r.faceLandmarks&&r.faceLandmarks[0];
+  if(!L){
+    track.ok=false;
+    app.emptyFrames++;
+    if(app.state === 'landing' && app.emptyFrames > 90 && !app.isSpeaking){
+      $('#dialogue-box').classList.remove('locked');
+      $('#mirror-status').textContent = 'SCANNING PERIMETER…';
+      $('#dialogue-en').textContent = '"Raise your hand to the camera or tap below to begin your evaluation."';
+    }
+    return;
+  }
+
+  app.emptyFrames = 0;
+  const c=cover(), P=L.map(p=>[cw-(c.ox+p.x*c.vw*c.s), c.oy+p.y*c.vh*c.s]);
+
+  let e1 = [(P[33][0]+P[133][0])/2, (P[33][1]+P[133][1])/2];
+  let e2 = [(P[362][0]+P[263][0])/2, (P[362][1]+P[263][1])/2];
+  if (e1[0] > e2[0]) [e1, e2] = [e2, e1];
+
+  const mPt = [(P[13][0]+P[14][0])/2, (P[13][1]+P[14][1])/2];
+  let cL = P[234], cR = P[454];
+  if (cL[0] > cR[0]) [cL, cR] = [cR, cL];
+
+  const k = track.seen ? 0.45 : 1.0;
+  track.eyeL   = lerpPt(track.eyeL, e1, k);
+  track.eyeR   = lerpPt(track.eyeR, e2, k);
+  track.mouth  = lerpPt(track.mouth, mPt, k);
+  track.top    = lerpPt(track.top, P[10], k);
+  track.chin   = lerpPt(track.chin, P[152], k);
+  track.cheekL = lerpPt(track.cheekL, cL, k);
+  track.cheekR = lerpPt(track.cheekR, cR, k);
+  track.pts    = P;
+  track.ok = track.seen = true;
+
+  if(app.state === 'landing'){
+    triggerAutonomousLure(now);
+  }
+}
+
+/* 奇數幀偵測手勢（首頁舉手啟動 + 問答左右手選答案） */
+function resetGestureUI() {
+  gesture.side = null;
+  gesture.progress = 0;
+  $('#start-hold-fill').style.width = '0%';
+  $('#opt-card-0').classList.remove('gesture-active');
+  $('#opt-card-1').classList.remove('gesture-active');
+  $('#dwell-0').style.width = '0%';
+  $('#dwell-1').style.width = '0%';
+}
+
+function detectHands(now){
+  if(!handLm || !app.camOK || video.readyState < 2 || !video.videoWidth) return;
+  if(app.state === 'verdict' || now < gesture.cooldownUntil){
+    gesture.active = false;
+    return;
+  }
+
+  let r; try{ r = handLm.detectForVideo(video, now); }catch{ return; }
+  const hand = r.landmarks && r.landmarks[0];
+  if(!hand){
+    gesture.active = false;
+    resetGestureUI();
+    return;
+  }
+
+  const c = cover();
+  // Landmark 9 = 中指掌指關節（手掌正中心），轉換為鏡像螢幕座標
+  const normX = 1 - hand[9].x;
+  gesture.palmX = cw - (c.ox + hand[9].x * c.vw * c.s);
+  gesture.palmY = c.oy + hand[9].y * c.vh * c.s;
+  gesture.active = true;
+
+  // 狀態 A：首頁舉手 1.5 秒自動啟動測驗
+  if(app.state === 'landing'){
+    if(gesture.side !== 'start'){
+      gesture.side = 'start';
+      gesture.holdStart = now;
+    }
+    const elapsed = (now - gesture.holdStart) / 1000;
+    gesture.progress = clamp(elapsed / 1.5, 0, 1);
+    $('#start-hold-fill').style.width = `${(gesture.progress * 100).toFixed(1)}%`;
+    $('#start-btn-label').textContent = `✋ HOLDING… ${(gesture.progress * 100)|0}%`;
+
+    if(gesture.progress >= 1){
+      $('#start-btn-label').textContent = '✋ RAISE HAND (1.5s) OR TAP TO BEGIN';
+      startQuiz();
+    }
+    return;
+  }
+
+  // 狀態 B：問答畫面舉左手 (normX < 0.45) 選 A，舉右手 (normX > 0.55) 選 B，停留 1.2 秒確認
+  if(app.state === 'quiz'){
+    const currentSide = normX < 0.45 ? 0 : (normX > 0.55 ? 1 : null);
+    if(currentSide !== null && currentSide === gesture.side){
+      const elapsed = (now - gesture.holdStart) / 1000;
+      gesture.progress = clamp(elapsed / 1.2, 0, 1);
+
+      $('#opt-card-0').classList.toggle('gesture-active', currentSide === 0);
+      $('#opt-card-1').classList.toggle('gesture-active', currentSide === 1);
+      $('#dwell-0').style.width = currentSide === 0 ? `${(gesture.progress * 100).toFixed(1)}%` : '0%';
+      $('#dwell-1').style.width = currentSide === 1 ? `${(gesture.progress * 100).toFixed(1)}%` : '0%';
+      $('#gesture-hint-status').textContent = currentSide === 0 ? `HOLDING LEFT [A]… ${(gesture.progress*100)|0}%` : `HOLDING RIGHT [B]… ${(gesture.progress*100)|0}%`;
+
+      if(gesture.progress >= 1){
+        $('#gesture-hint-status').textContent = 'RAISE LEFT OR RIGHT HAND TO CHOOSE';
+        answer(currentSide);
+      }
+    } else {
+      gesture.side = currentSide;
+      gesture.holdStart = now;
+      gesture.progress = 0;
+      $('#opt-card-0').classList.toggle('gesture-active', currentSide === 0);
+      $('#opt-card-1').classList.toggle('gesture-active', currentSide === 1);
+      $('#dwell-0').style.width = '0%';
+      $('#dwell-1').style.width = '0%';
+      $('#gesture-hint-status').textContent = 'RAISE LEFT OR RIGHT HAND TO CHOOSE';
+    }
+  }
+}
+
+/* ================= 7. CANVAS RESIZING ================= */
+function fit(){
+  const r=stageBg.getBoundingClientRect(), d=Math.min(devicePixelRatio||1,2);
+  if(Math.abs(r.width-cw)<.5&&Math.abs(r.height-ch)<.5&&d===dpr) return;
+  cw=r.width; ch=r.height; dpr=d; cv.width=Math.round(cw*dpr); cv.height=Math.round(ch*dpr); ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+new ResizeObserver(fit).observe(stageBg); addEventListener('resize',fit);
+
+/* ================= 8. OVERLAY RENDERING ================= */
+const MONO='ui-monospace,"SF Mono",Menlo,Consolas,monospace';
+
+function getFaceMetrics() {
+  if (!track.seen) {
+    const ry = Math.min(ch * 0.28, cw * 0.22);
+    const cx = cw / 2, cy = ch * 0.46;
+    return {
+      cx, cy, rx: ry * 0.78, ry, rot: 0,
+      eyeL: [cx - ry * 0.32, cy - ry * 0.12],
+      eyeR: [cx + ry * 0.32, cy - ry * 0.12],
+      mouth: [cx, cy + ry * 0.42],
+      eyeDist: ry * 0.64
+    };
+  }
+  const cx = (track.cheekL[0] + track.cheekR[0]) / 2;
+  const cy = (track.top[1] + track.chin[1]) / 2;
+  const rx = Math.hypot(track.cheekR[0] - track.cheekL[0], track.cheekR[1] - track.cheekL[1]) * 0.54;
+  const ry = Math.hypot(track.chin[0] - track.top[0], track.chin[1] - track.top[1]) * 0.54;
+  const rot = Math.atan2(track.eyeR[1] - track.eyeL[1], track.eyeR[0] - track.eyeL[0]);
+  const eyeDist = Math.hypot(track.eyeR[0] - track.eyeL[0], track.eyeR[1] - track.eyeL[1]);
+  return { cx, cy, rx, ry, rot, eyeL: track.eyeL, eyeR: track.eyeR, mouth: track.mouth, eyeDist };
+}
+
+/* 繪製手掌偵測空間游標與進度圓環 */
+function drawHandReticle() {
+  if (!gesture.active) return;
+  const { palmX, palmY, progress, side } = gesture;
+  ctx.save();
+  ctx.translate(palmX, palmY);
+
+  // 外環底圈
+  ctx.strokeStyle = 'rgba(0, 240, 255, 0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, 28, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // 停留確認進度弧線
+  if (progress > 0) {
+    ctx.strokeStyle = '#00f0ff';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(0, 0, 28, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
+    ctx.stroke();
+  }
+
+  // 中心準星
+  ctx.fillStyle = '#00f0ff';
+  ctx.beginPath();
+  ctx.arc(0, 0, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.font = `700 10px ${MONO}`;
+  ctx.textAlign = 'center';
+  const label = side === 'start' ? 'INITIATING' : (side === 0 ? 'LEFT [A]' : (side === 1 ? 'RIGHT [B]' : 'CENTER'));
+  ctx.fillText(label, 0, -36);
+  ctx.restore();
+}
+
+function drawSentientMirrorMask(now){
+  if(!app.camOK){ ctx.fillStyle='#0c0d12'; ctx.fillRect(0,0,cw,ch); }
+  const t = now / 1000;
+  const M = getFaceMetrics();
+  const pulseAmp = app.isSpeaking ? (Math.sin(t * 28) * 0.5 + 0.5) : 0.06;
+  const ringExpand = app.isSpeaking ? (pulseAmp * 10) : (Math.sin(t * 2) * 2.5);
+  const mainCol = app.isSpeaking ? '#ff2222' : (track.ok ? '#00f0ff' : 'rgba(0, 240, 255, 0.35)');
+
+  ctx.save();
+  ctx.translate(M.cx, M.cy);
+  ctx.rotate(M.rot);
+  ctx.strokeStyle = mainCol;
+  ctx.lineWidth = app.isSpeaking ? 2.2 : 1.5;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, M.rx + ringExpand, M.ry + ringExpand, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.fillStyle = mainCol;
+  ctx.font = `700 ${Math.max(10, Math.floor(M.rx * 0.12))}px ${MONO}`;
+  ctx.textAlign = 'center';
+  const badgeText = app.isSpeaking ? '[ CALLING SUBJECT… ]' : (track.ok ? '[ FACE LOCKED ]' : '[ SCANNING… ]');
+  ctx.fillText(badgeText, 0, -M.ry - 12);
+  ctx.restore();
+
+  [M.eyeL, M.eyeR].forEach(pt => {
+    ctx.save();
+    ctx.translate(pt[0], pt[1]);
+    ctx.rotate(M.rot);
+    ctx.strokeStyle = mainCol;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, M.eyeDist * 0.22, M.eyeDist * 0.095, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = mainCol;
+    ctx.beginPath();
+    ctx.arc(0, 0, 2.5 + pulseAmp * 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+
+  ctx.save();
+  ctx.translate(M.mouth[0], M.mouth[1]);
+  ctx.rotate(M.rot);
+  const mouthW = M.eyeDist * 0.44;
+  const mouthH = app.isSpeaking ? (4 + pulseAmp * 14) : 2.5;
+  ctx.strokeStyle = mainCol;
+  ctx.fillStyle = app.isSpeaking ? 'rgba(255, 34, 34, 0.28)' : 'transparent';
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, mouthW, mouthH, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  drawHandReticle();
+}
+
+function drawQuizScanning(now){
+  if(!app.camOK){ ctx.fillStyle='#0c0d12'; ctx.fillRect(0,0,cw,ch); }
+  const M = getFaceMetrics(), t = now / 1000;
+  ctx.save();
+  ctx.translate(M.cx, M.cy);
+  ctx.rotate(M.rot);
+  ctx.strokeStyle='rgba(0,240,255,.18)'; ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, M.rx, M.ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const scanY = Math.sin(t*2.5) * M.ry;
+  ctx.strokeStyle='rgba(255,34,34,.35)';
+  ctx.beginPath(); ctx.moveTo(-M.rx, scanY); ctx.lineTo(M.rx, scanY); ctx.stroke();
+  ctx.restore();
+
+  drawHandReticle();
+}
+
+function drawLM(t){
+  const P=track.pts; if(!track.ok||!P||!LMC) return; const a=clamp(t/1.2,0,1);
+  const path=l=>{ctx.beginPath();for(const c of l){const p=P[c.start],q=P[c.end];ctx.moveTo(p[0],p[1]);ctx.lineTo(q[0],q[1])}ctx.stroke()};
+  ctx.strokeStyle='#6dffc2'; ctx.lineWidth=.5; ctx.globalAlpha=.14*a; path(LMC.tess);
+  ctx.lineWidth=1; ctx.globalAlpha=.4*a; LMC.cont.forEach(path);
+  ctx.globalAlpha=1;
+}
+
+function camSlice(sy,sh,off,alpha){
+  if(!video.videoWidth) return; const c=cover();
+  ctx.save(); ctx.globalAlpha=alpha; ctx.translate(cw,0); ctx.scale(-1,1);
+  ctx.drawImage(video,0,Math.max(0,(sy-c.oy)/c.s),c.vw,sh/c.s,c.ox+off,sy,c.vw*c.s,sh); ctx.restore();
+}
+
+function roleFX(t, M){
+  const id=app.role.id;
+  if(id==='conformist'){ ctx.strokeStyle=app.role.col; ctx.lineWidth=1.5; const m=26,l=34; ctx.beginPath();
+    [[m,m,1,1],[cw-m,m,-1,1],[m,ch-m,1,-1],[cw-m,ch-m,-1,-1]].forEach(([x,y,a,b])=>{ctx.moveTo(x+a*l,y);ctx.lineTo(x,y);ctx.lineTo(x,y+b*l)}); ctx.stroke(); }
+  else if(id==='observer'){ ctx.strokeStyle='rgba(143,184,255,.45)'; ctx.fillStyle='#8fb8ff'; ctx.font=`9.5px ${MONO}`; ctx.lineWidth=1; ctx.textAlign='left';
+    [-.85,-.4,-.12,.3,.55,.97].forEach((v,i)=>{const y=M.cy+v*M.ry;ctx.beginPath();ctx.moveTo(M.cx-M.rx*1.3,y);ctx.lineTo(M.cx+M.rx*1.3,y);ctx.stroke();ctx.fillText((v*1.618).toFixed(3)+' / R'+i,M.cx+M.rx*1.3+6,y+3)}); }
+  else if(id==='dissenter'){ const b=Math.random()<.35?1:.25; camSlice(0,ch,-10*b,.14); camSlice(0,ch,10*b,.1);
+    for(let i=0;i<3;i++) camSlice(Math.random()*ch,10+Math.random()*40,(Math.random()-.5)*45*b,.75); }
+  else { for(let i=0;i<70;i++){ ctx.fillStyle=`rgba(${Math.random()<.5?255:20},${Math.random()<.5?255:20},255,${Math.random()*.25})`; const z=1+Math.random()*2.5; ctx.fillRect(Math.random()*cw,Math.random()*ch,z,z); } }
+}
+
+function placard(txt,y,maxW,size,weight,fg,bg,fam){
+  ctx.font=`${weight} ${size}px ${fam}`; const k=Math.min(1,maxW/ctx.measureText(txt).width); ctx.font=`${weight} ${size*k}px ${fam}`;
+  const w=ctx.measureText(txt).width+size*.8, h=size*k*1.5; ctx.fillStyle=bg; ctx.fillRect(-w/2,y-h/2,w,h);
+  ctx.fillStyle=fg; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(txt,0,y+size*.04);
+}
+
+function stamp(p, M, fn){ if(p<=0) return; const e=ease(clamp(p,0,1)), k=1+(1-e)*.5; ctx.save(); ctx.globalAlpha=e; ctx.translate(M.cx, M.cy); ctx.rotate(M.rot); ctx.scale(k,k); fn(); ctx.restore(); }
+
+/* ================= 9. MAIN RAF LOOP (INTERLEAVED FACE & HAND DETECTION) ================= */
+function frame(now){
+  requestAnimationFrame(frame);
+  if(document.hidden||!cw) return;
+  ctx.clearRect(0,0,cw,ch);
+
+  // 交替執行人臉與手勢推理，兼顧 iPad 與筆電流暢度
+  if (app.frameCount++ % 2 === 0) {
+    detectFace(now);
+  } else {
+    detectHands(now);
+  }
+
+  if(app.state === 'landing'){
+    return drawSentientMirrorMask(now);
+  }
+
+  if(app.state === 'quiz'){
+    return drawQuizScanning(now);
+  }
+
+  const t=(now-app.t0)/1000; if(t<0) return;
+  if(!app.camOK){ ctx.fillStyle='#0c0d12'; ctx.fillRect(0,0,cw,ch); }
+  
+  const M = getFaceMetrics();
+  const R = app.role;
+  roleFX(t, M);
+
+  const pp = clamp((t-0.8)/1.6, 0, 1);
+  const maskImg = MASK_TEXTURES[R.id];
+  if(pp > 0 && maskImg && maskImg.complete && maskImg.naturalWidth > 0){
+    const e = ease(pp);
+    const drawW = M.eyeDist / 0.28;
+    const drawH = drawW * (maskImg.naturalHeight / maskImg.naturalWidth);
+    const eyeMidX = (M.eyeL[0] + M.eyeR[0]) / 2;
+    const eyeMidY = (M.eyeL[1] + M.eyeR[1]) / 2;
+
+    ctx.save();
+    ctx.translate(eyeMidX, eyeMidY);
+    ctx.rotate(M.rot);
+    const offsetY = -drawH * 0.52;
+    ctx.beginPath();
+    ctx.rect(-drawW/2, offsetY, drawW, drawH * e);
+    ctx.clip();
+    ctx.globalAlpha = MASK_ALPHA;
+    ctx.drawImage(maskImg, -drawW/2, offsetY, drawW, drawH);
+    ctx.restore();
+
+    if(pp < 1){
+      ctx.save();
+      ctx.translate(eyeMidX, eyeMidY);
+      ctx.rotate(M.rot);
+      ctx.fillStyle = R.col;
+      ctx.fillRect(-drawW*0.35, -drawH*0.52 + drawH*e, drawW*0.7, 2);
+      ctx.restore();
+    }
+  }
+  
+  drawLM(t);
+
+  const f1 = Math.max(11, M.rx * 0.16), f2 = Math.max(12, M.rx * 0.16);
+  stamp((t-2.0)/.5, M, ()=>placard(`[ THREAT: LVL ${pad(app.level)} ]`, -M.ry * 1.05, M.rx * 2.4, f1, 700, '#07080a', R.col, MONO));
+  stamp((t-2.3)/.5, M, ()=>placard(R.title, M.ry * 1.08, M.rx * 2.6, f2, 800, '#fff', 'rgba(5,6,8,.88)', MONO));
+
+  if(rec.on) recTick(now);
+}
+
+/* ================= 10. TICKET + BIOMETRIC MASK MUGSHOT ================= */
+function captureFaceMugshot() {
+  composite();
+  const M = getFaceMetrics();
+  const cropW = M.rx * 2.6 * dpr;
+  const cropH = M.ry * 2.6 * dpr;
+  const sx = clamp((M.cx * dpr) - cropW / 2, 0, Math.max(0, rc.width - cropW));
+  const sy = clamp((M.cy * dpr) - cropH / 2, 0, Math.max(0, rc.height - cropH));
+
+  const mugCv = document.createElement('canvas');
+  mugCv.width = 240; mugCv.height = 290;
+  const mctx = mugCv.getContext('2d');
+  mctx.fillStyle = '#111'; mctx.fillRect(0, 0, 240, 290);
+  mctx.drawImage(rc, sx, sy, cropW, cropH, 0, 0, 240, 290);
+  return mugCv.toDataURL('image/jpeg', 0.88);
+}
+
+function showTicket(){
+  const R=app.role, tot=app.log.reduce((a,l)=>a+l.t,0), s=(id,v)=>$(id).textContent=v;
+  try { $('#rec-mugshot').src = captureFaceMugshot(); } catch(e) {}
+  s('#rec-time',new Date().toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', second:'2-digit'}));
+  s('#rec-id',app.subject);
+  s('#rec-latency',`+${app.penalty.toFixed(1)}s [${app.penalty>5?'ELEVATED':'NOMINAL'}]`);
+  $('#rec-log').innerHTML=app.log.map(l=>`<div class="receipt-row"><span>Q${l.q} · ${l.pick}</span><span>${l.t.toFixed(1)}s${l.over?` (+${l.over.toFixed(1)})`:''}</span></div>`).join('')+`<div class="receipt-row"><b>TOTAL</b><b>${tot.toFixed(1)}s</b></div>`;
+  s('#rec-title',R.title); s('#rec-lvl',`LVL ${pad(app.level)} / 10`); s('#rec-axis',R.axis); s('#rec-syntax',R.keywords); s('#rec-desc',R.desc);
+  const st=$('#rec-stamp'); st.textContent=R.stamp; st.style.color=st.style.borderColor=R.stampCol;
+  $('#ticket-modal').classList.add('on');
+}
+
+/* ================= 10b. RECORD / SNAPSHOT ================= */
+const rc=document.createElement('canvas'), rctx=rc.getContext('2d'), rec={on:false,mr:null,chunks:[],t0:0,sec:-1};
+function composite(){
+  const W=Math.round(cw*dpr), H=Math.round(ch*dpr); if(rc.width!==W||rc.height!==H){ rc.width=W; rc.height=H; }
+  rctx.setTransform(dpr,0,0,dpr,0,0); rctx.globalCompositeOperation='source-over'; rctx.filter='none'; rctx.fillStyle='#000'; rctx.fillRect(0,0,cw,ch);
+  if(app.camOK&&video.videoWidth){ const c=cover(); rctx.save(); rctx.filter=app.role.filter; rctx.translate(cw,0); rctx.scale(-1,1);
+    rctx.drawImage(video,c.ox,c.oy,c.vw*c.s,c.vh*c.s); rctx.restore(); }
+  rctx.filter='none'; rctx.globalCompositeOperation=app.role.blend; rctx.fillStyle=app.role.tint; rctx.fillRect(0,0,cw,ch);
+  rctx.globalCompositeOperation='source-over'; rctx.drawImage(cv,0,0,cw,ch);
+}
+function saveBlob(blob,ext){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`mirror-${app.subject}-${app.role.id}.${ext}`; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),5000); }
+
+function toggleRec(){
+  const b=$('#btn-rec'); if(rec.on){ rec.mr.stop(); return; }
+  if(!window.MediaRecorder||!rc.captureStream){ alert('Recording is not supported in this browser.'); return; }
+  composite();
+  const mime=['video/mp4;codecs=avc1','video/webm;codecs=vp9','video/webm'].find(t=>MediaRecorder.isTypeSupported(t))||'';
+  rec.chunks=[]; rec.mr=new MediaRecorder(rc.captureStream(30),mime?{mimeType:mime,videoBitsPerSecond:8e6}:{});
+  rec.mr.ondataavailable=e=>e.data.size&&rec.chunks.push(e.data);
+  rec.mr.onstop=()=>{ rec.on=false; b.classList.remove('rec-on'); b.textContent='● REC'; saveBlob(new Blob(rec.chunks,{type:mime||'video/webm'}),mime.includes('mp4')?'mp4':'webm'); };
+  rec.mr.start(1000); rec.on=true; rec.t0=performance.now(); rec.sec=-1; b.classList.add('rec-on');
+}
+function recTick(now){ composite(); const s=Math.floor((now-rec.t0)/1000); if(s!==rec.sec){ rec.sec=s; $('#btn-rec').textContent=`■ STOP ${pad(s/60|0)}:${pad(s%60)}`; } }
+function snapshot(){ composite(); rc.toBlob(b=>saveBlob(b,'png'),'image/png'); }
+
+/* ================= 11. BOOT ================= */
+if('speechSynthesis' in window) window.speechSynthesis.getVoices();
+document.addEventListener('pointerdown', unlockAllAudio, { once: true });
+document.addEventListener('touchstart', unlockAllAudio, { once: true });
+
+$('#btn-kiosk-arm').addEventListener('click', () => { unlockAllAudio(); speakMirror("System armed. Gesture and facial tracking active."); });
+$('#btn-start').addEventListener('click', startQuiz);
+document.querySelectorAll('.btn-opt').forEach(b=>b.addEventListener('click',()=>answer(+b.dataset.i)));
+addEventListener('keydown',e=>{
+  if(app.state==='landing'&&e.key==='Enter') startQuiz();
+  if(app.state==='quiz'){ if(e.key==='1')answer(0); if(e.key==='2')answer(1); }
+  if(e.key==='Escape')$('#ticket-modal').classList.remove('on');
+});
+
+$('#btn-cam').addEventListener('click',initCamera);
+$('#btn-ticket').addEventListener('click',showTicket);
+$('#btn-rec').addEventListener('click',toggleRec);
+$('#btn-shot').addEventListener('click',snapshot);
+$('#btn-reset').addEventListener('click',()=>location.reload());
+$('#btn-print').addEventListener('click',()=>print());
+$('#btn-close').addEventListener('click',()=>$('#ticket-modal').classList.remove('on'));
+
+fit();
+initCamera();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
